@@ -28,7 +28,7 @@ def generate_episode(env):
         done = term or trunc
     return traj
 
-def mc_first_visit_V(env, episodes=10000, gamma=0.1):
+def monte_carlo_V(env, episodes=10000, gamma=0.1, first_visit=True):
     V = defaultdict(float)
     N = defaultdict(int)
 
@@ -43,7 +43,7 @@ def mc_first_visit_V(env, episodes=10000, gamma=0.1):
         for t in range(len(traj)-1, -1, -1):
             G = gamma * G + rewards[t]
             s = states[t]
-            if s in seen:                      # Wenn State schon besucht, ignorieren
+            if first_visit and (s in seen):  # Wenn State schon besucht, ignorieren
                 continue
             seen.add(s)
             N[s] += 1
@@ -55,26 +55,6 @@ def mc_first_visit_V(env, episodes=10000, gamma=0.1):
     env.close()
     return V, N
 
-def mc_multiple_visit_V(env, episodes=10000, gamma=0.1):
-    V = defaultdict(float)
-    N = defaultdict(int)
-
-    for _ in range(episodes):
-        traj = generate_episode(env)
-        states = [s for s, _, _ in traj]
-        rewards = [r for _, _, r in traj]
-
-        G = 0.0
-        seen = set()
-        # rückwärts: akkumuliert Return; update nur beim ersten Besuch (from start)
-        for t in range(len(traj)-1, -1, -1):
-            G = gamma * G + rewards[t]
-            s = states[t]
-            N[s] += 1
-            V[s] += (G - V[s]) / N[s]          # inkrementeller Mittelwert
-
-    env.close()
-    return V, N
 
 def print_heat_map(env, V, N):
     desc = env.unwrapped.desc  # Bytes-Array
