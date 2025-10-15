@@ -16,7 +16,27 @@ def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float =
     )
     return env
 
-def generate_episode(env):
+def generate_greedy_episode(env, V, epsilon=0.1):
+    s, _ = env.reset()
+    traj = []
+    done = False
+    while not done:
+        if np.random.rand() < epsilon:      # ε-greedy policy
+            a = env.action_space.sample()    # random action
+        else:
+            q_values = []
+            for a in range(env.action_space.n):
+                s_next, r, term, trunc, _ = env.step(a)
+                q_values.append(r + (0 if term or trunc else V[s_next]))
+                env.env.s = s  # zurücksetzen
+            a = np.argmax(q_values)           # beste Aktion wählen
+        s_next, r, term, trunc, _ = env.step(a)
+        traj.append((s, a, r))
+        s = s_next
+        done = term or trunc
+    return traj
+
+def generate_random_episode(env):
     s, _ = env.reset()
     traj = []
     done = False
@@ -28,12 +48,12 @@ def generate_episode(env):
         done = term or trunc
     return traj
 
-def monte_carlo_V(env, episodes=10000, gamma=0.1, first_visit=True):
+def monte_carlo_V(env, episodes:int=10000, gamma:float=0.1, first_visit:bool=True, incremental:bool=True):
     V = defaultdict(float)
     N = defaultdict(int)
 
-    for _ in range(episodes):
-        traj = generate_episode(env)
+    for episode in range(episodes):
+        traj = generate_random_episode(env) if incremental else generate_greedy_episode(env, V, gamma)
         states = [s for s, _, _ in traj]
         rewards = [r for _, _, r in traj]
 
@@ -49,12 +69,12 @@ def monte_carlo_V(env, episodes=10000, gamma=0.1, first_visit=True):
             N[s] += 1
             V[s] += (G - V[s]) / N[s]          # inkrementeller Mittelwert
 
-        if (episodes % 100) == 0:
-            print(f"Episode: {_}")
+        if episode % 100 == 0:
+            print(f"Episode: {episode}")
             print(f"Reward: {sum(rewards)}")
+            print(f"Lenght Trajectory: {len(traj)}")
     env.close()
     return V, N
-
 
 def print_heat_map(env, V, N):
     desc = env.unwrapped.desc  # Bytes-Array
