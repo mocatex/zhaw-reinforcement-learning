@@ -4,17 +4,26 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
+class HolePenaltyWrapper(gym.Wrapper):
+    """Setzt Reward auf -1.0, wenn der Agent in ein Loch (b'H') fällt."""
+    def step(self, action):
+        s, r, term, trunc, info = self.env.step(action)
+        desc = self.env.unwrapped.desc
+        ncol = self.env.unwrapped.ncol
+        row, col = divmod(int(s), ncol)
+        if desc[row, col] == b'H':
+            r = -1.0
+        return int(s), r, term, trunc, info
+
 def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float = 0.9, seed: int = 0):
-    """Create and return the environment."""
+    """Create and return the environment with hole-penalty wrapper."""
     env = gym.make(
         "FrozenLake-v1",
         is_slippery=is_slippery,
         render_mode="rgb_array",
-        desc=generate_random_map(
-            size=map_size, p=proba_frozen, seed=seed
-        ),
+        desc=generate_random_map(size=map_size, p=proba_frozen, seed=seed),
     )
-    return env
+    return HolePenaltyWrapper(env)
 
 def generate_greedy_episode(env, V, epsilon=0.1):
     s, _ = env.reset()
@@ -48,12 +57,20 @@ def generate_random_episode(env):
         done = term or trunc
     return traj
 
-def monte_carlo_V(env, episodes:int=10000, gamma:float=0.1, first_visit:bool=True, incremental:bool=True):
+def monte_carlo_V(
+        env,
+        episodes:int=50000,
+        learning_rate:float=1.0,
+        gamma:float=0.9,
+        epsilon:float=0.1,
+        first_visit:bool=True,
+        incremental:bool=True
+):
     V = defaultdict(float)
     N = defaultdict(int)
 
     for episode in range(episodes):
-        traj = generate_random_episode(env) if incremental else generate_greedy_episode(env, V, gamma)
+        traj = generate_greedy_episode(env, V, epsilon) if incremental else generate_random_episode(env)
         states = [s for s, _, _ in traj]
         rewards = [r for _, _, r in traj]
 
@@ -67,7 +84,7 @@ def monte_carlo_V(env, episodes:int=10000, gamma:float=0.1, first_visit:bool=Tru
                 continue
             seen.add(s)
             N[s] += 1
-            V[s] += (G - V[s]) / N[s]          # inkrementeller Mittelwert
+            V[s] += learning_rate * ((G - V[s]) / N[s])    # inkrementeller Mittelwert
 
         if episode % 100 == 0:
             print(f"Episode: {episode}")
@@ -128,3 +145,60 @@ def print_heat_map(env, V, N):
     plt.title("FrozenLake Value-Heatmap (First-Visit MC, random policy)")
     plt.tight_layout()
     plt.show()
+
+
+def print_policy_map(env, V, gamma: float = 1.0):
+    """
+    Visualisiert die greedy Policy (→, ←, ↓, ↑) basierend auf V(s).
+    """
+    desc = env.unwrapped.desc
+    H, W = desc.shape
+
+    # Mapping Aktionen -> Symbole (FrozenLake: 0=LEFT,1=DOWN,2=RIGHT,3=UP)
+    action_symbols = {0: "←", 1: "↓", 2: "→", 3: "↑"}
+
+    policy_grid = np.full((H, W), "", dtype=object)
+
+    # Falls vorhanden aktuellen env-state sichern, damit wir ihn am Ende zurücksetzen
+    orig_state = getattr(env.unwrapped, "s", None)
+
+    for s in range(H * W):
+        r, c = divmod(s, W)
+        if desc[r, c] == b'H':
+            policy_grid[r, c] = "H"
+            continue
+        if desc[r, c] == b'G':
+            policy_grid[r, c] = "G"
+            continue
+
+        q_values = []
+        for a in range(env.action_space.n):
+            # Zustand temporär setzen, dann Aktion simulieren
+            env.unwrapped.s = s
+            s_next, reward, term, trunc, _ = env.step(a)
+            # Return berücksichtigen (Terminalzustand stoppt zukünftigen Value)
+            future = 0.0 if (term or trunc) else gamma * V.get(s_next, 0.0)
+            q_values.append(reward + future)
+
+        best_a = int(np.argmax(q_values))
+        policy_grid[r, c] = action_symbols.get(best_a, "?")
+
+    # Umgebungszustand wiederherstellen
+    if orig_state is not None:
+        env.unwrapped.s = orig_state
+
+    # Darstellung: leeres Heatmap-Grid, nur Texte (Pfeile / H / G)
+    plt.figure()
+    canvas = np.zeros((H, W))
+    im = plt.imshow(canvas, cmap="Greys", origin="upper")
+    plt.xticks(range(W)); plt.yticks(range(H))
+    plt.gca().set_aspect("equal")
+
+    for r in range(H):
+        for c in range(W):
+            plt.text(c, r, policy_grid[r, c], ha="center", va="center", fontsize=18, weight="bold")
+
+    plt.title("FrozenLake Policy (greedy from V)")
+    plt.tight_layout()
+    plt.show()
+
