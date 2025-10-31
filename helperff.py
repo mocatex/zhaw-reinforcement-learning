@@ -283,40 +283,19 @@ def plot_experiment_results(env, V, N, episode_returns, episode_lengths, gamma: 
                     txt = f"{v:.2f}\nN={n}"
                 ax3.text(c, r, txt, ha="center", va="center", fontsize=8, color="white" if not np.isnan(v) and v < (vmin+vmax)/2 else "black")
 
-    # 4) Policy-Map (greedy aus V) mit Pfeilen
+    # 4) Policy-Map (aus V) mit Pfeilen
     action_symbols = {0: "←", 1: "↓", 2: "→", 3: "↑"}
     policy_grid = np.full((H, W), "", dtype=object)
-
-    # sicheren Originalzustand wiederherstellen nach Simulation
-    orig_state = getattr(env.unwrapped, "s", None)
-    orig_last = getattr(env.unwrapped, "lastaction", None)
-
     for s in range(H * W):
         r, c = divmod(s, W)
         if mask_hole[r, c]:
-            policy_grid[r, c] = "H"
+            policy_grid[r, c] = "H";
             continue
         if mask_goal[r, c]:
-            policy_grid[r, c] = "G"
+            policy_grid[r, c] = "G";
             continue
-
-        q_values = []
-        for a in range(env.action_space.n):
-            # temporär setzen, Aktion simulieren
-            env.unwrapped.s = int(s)
-            env.unwrapped.lastaction = None
-            s_next, reward, term, trunc, _ = env.step(a)
-            future = 0.0 if (term or trunc) else gamma * float(V.get(int(s_next), 0.0))
-            q_values.append(float(reward) + future)
-
-        best_a = int(np.argmax(q_values))
-        policy_grid[r, c] = action_symbols.get(best_a, "?")
-
-    # restore
-    if orig_state is not None:
-        env.unwrapped.s = orig_state
-    if orig_last is not None:
-        env.unwrapped.lastaction = orig_last
+        a = _best_action_from_V(env, V, s, gamma)
+        policy_grid[r, c] = action_symbols[a]
 
     # Darstellung der Policy
     canvas = np.zeros((H, W))
@@ -331,8 +310,26 @@ def plot_experiment_results(env, V, N, episode_returns, episode_lengths, gamma: 
     plt.tight_layout()
     plt.show()
 
+def _best_action_from_V(env, V, s, gamma):
+    P = env.unwrapped.P
+    desc = env.unwrapped.desc
+    ncol = env.unwrapped.ncol
+
+    q_vals = np.zeros(env.action_space.n, dtype=float)
+    for a in range(env.action_space.n):
+        q = 0.0
+        for prob, s_next, _, done in P[int(s)][a]:
+            r = shaped_reward(int(s), int(s_next), desc, ncol)  # identisch zum Wrapper
+            v_next = 0.0 if done else gamma * V.get(int(s_next), 0.0)
+            q += prob * (r + v_next)
+        q_vals[a] = q
+
+    # Gleichstände fair brechen statt Default-Bias auf Aktion 0
+    best = np.flatnonzero(q_vals == q_vals.max())
+    return int(np.random.default_rng(0).choice(best))  # oder deterministisch: best[-1]
+
 if __name__ == "__main__":
-    """
+
     env_a_random_small = make_env(is_slippery=False, map_size=5, proba_frozen=0.85, seed=42)
     V_a, N_a, returns_a, lengths_a = run_mc_experiment(
         env_a_random_small,
@@ -370,7 +367,7 @@ if __name__ == "__main__":
         max_steps=200,
     )
     plot_experiment_results(env_b_greedy_small, V, N, returns, lengths, gamma=0.9)
-    """
+
     env_b_greedy_big = make_env(is_slippery=False, map_size=11, proba_frozen=0.85, seed=42)
     V, N, returns, lengths = run_mc_experiment(
         env_b_greedy_big,
