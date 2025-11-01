@@ -3,15 +3,15 @@ from gymnasium.envs.toy_text.frozen_lake import generate_random_map
 from gymnasium import Wrapper
 import numpy as np
 from collections import defaultdict
+from dataclasses import dataclass
 
 class RewardShapingWrapper(Wrapper):
     """
-    Wrapper für FrozenLake mit Coin-Pickup:
-    - Coin (C): +coin_reward und das Tile wird zu b'S' (einmalig)
-    - Loch (H): -10
-    - Goal (G): +10
+    Wrapper für FrozenLake:
+    - Agent fällt in Loch: -10
     - normaler Schritt: -0.01
-    - Wand (kein Positionswechsel): -1
+    - läuft in Wand (kein Positionswechsel): -1
+    - erreicht Goal: +10
     """
     def __init__(self, env):
         super().__init__(env)
@@ -35,12 +35,6 @@ class RewardShapingWrapper(Wrapper):
             r_new = -10.0
         elif cell == b'G':
             r_new = 10.0
-        elif cell == b'C':
-            # Coin aufsammeln: Reward geben und Tile permanent in ein normales Start/Feld umwandeln
-            r_new = 1.0
-            # setze das Tile so, dass Coin nicht erneut eingesammelt wird
-            # (desc ist numpy array dtype='c', Zuweisung als bytes)
-            self.env.unwrapped.desc[row, col] = b'S'
         else:
             # Wand: kein Positionswechsel gegenüber prev_s
             if prev_s is not None and int(s_next) == int(prev_s):
@@ -48,13 +42,13 @@ class RewardShapingWrapper(Wrapper):
 
         return int(s_next), r_new, terminated, truncated, info
 
-def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float = 0.9, proba_coin=0.0, seed: int = 0):
+def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float = 0.9, seed: int = 0, render_mode=None):
     """Hilfsfunktion: erzeugt FrozenLake und wickelt ihn mit RewardShapingWrapper."""
     base_env = gym.make(
         "FrozenLake-v1",
         is_slippery=is_slippery,
-        render_mode=None,
-        desc=generate_random_map(size=map_size, p=proba_frozen, proba_coin=proba_coin, seed=seed),
+        render_mode=render_mode,
+        desc=generate_random_map(size=map_size, p=proba_frozen, seed=seed),
     )
     return RewardShapingWrapper(base_env)
 
@@ -96,8 +90,6 @@ def shaped_reward(prev_s, s_next, desc, ncol):
         return -10.0
     if cell == b'G':  # Goal
         return 10.0
-    if cell == b'C':  # Coin
-        return 1
     # Wand?
     return -1.0 if int(s_next) == int(prev_s) else -0.01
 
@@ -211,6 +203,122 @@ def run_mc_experiment(
     env.close()
     return V, N, episode_returns, episode_lengths
 
+@dataclass
+class QLParams:
+    episodes: int = 20000
+    max_steps: int = 200
+    alpha: float = 0.1            # learning rate
+    gamma: float = 0.99           # discount
+    epsilon_start: float = 1.0    # epsilon-greedy start
+    epsilon_min: float = 0.05
+    epsilon_decay: float = 0.999  # per-episode multiplicative decay
+    seed: int | None = 42         # for reproducibility
+    savefig_folder: str | None = "figures"
+
+def _epsilon_greedy_action(qtable: np.ndarray, state: int, epsilon: float, n_actions: int, rng: np.random.Generator) -> int:
+    """
+    Pick action ε-greedily from Q[state].
+    With probability ε, pick random action.
+    Otherwise pick argmax_a Q[state,a].
+    Returns action index.
+    """
+    if rng.random() < epsilon:
+        return rng.integers(0, n_actions)
+    return int(np.argmax(qtable[state]))
+
+def q_learning(env, params: QLParams):
+    """
+    Vanilla tabular Q-Learning on environment.
+    Returns:
+        qtable: (n_states, n_actions)
+        rewards_per_episode: list[float]
+        lengths_per_episode: list[int]
+    """
+    # Reproducibility
+    rng = np.random.default_rng(params.seed)
+
+    # Gymnasium reset signature
+    obs, info = env.reset(seed=params.seed)
+    n_states = env.observation_space.n
+    n_actions = env.action_space.n
+
+    qtable = np.zeros((n_states, n_actions), dtype=np.float32)
+    rewards_per_episode = []
+    lengths_per_episode = []
+
+    epsilon = params.epsilon_start
+
+    for ep in range(params.episodes):
+        state, _ = env.reset(seed=params.seed + ep if params.seed is not None else None)
+
+        total_reward = 0.0
+        steps = 0
+
+        for t in range(params.max_steps):
+            a = _epsilon_greedy_action(qtable, state, epsilon, n_actions, rng)
+            next_state, reward, terminated, truncated, _ = env.step(a)
+            done = terminated or truncated
+
+            # Q-learning target: r + gamma * max_a' Q(s', a')
+            best_next = 0.0 if done else np.max(qtable[next_state])
+            td_target = reward + params.gamma * best_next
+            td_error  = td_target - qtable[state, a]
+            qtable[state, a] += params.alpha * td_error
+
+            total_reward += reward
+            steps += 1
+            state = next_state
+
+            if done:
+                break
+
+        rewards_per_episode.append(total_reward)
+        lengths_per_episode.append(steps)
+
+        # ε decay (keep at least epsilon_min)
+        epsilon = max(params.epsilon_min, epsilon * params.epsilon_decay)
+
+    return qtable, rewards_per_episode, lengths_per_episode
+
+def q_to_v(qtable: np.ndarray) -> np.ndarray:
+    """V(s) = max_a Q(s,a)."""
+    return np.max(qtable, axis=1)
+
+def greedy_policy_from_q(qtable: np.ndarray) -> np.ndarray:
+    """π(s) = argmax_a Q(s,a)."""
+    return np.argmax(qtable, axis=1).astype(int)
+
+def evaluate_policy(env, policy: np.ndarray, episodes: int = 100, max_steps: int = 200, seed: int | None = 123):
+    """
+    Roll out a deterministic policy for reporting only (no learning).
+    Returns average reward and average trajectory length.
+    """
+    rng = np.random.default_rng(seed)
+    rewards, lengths = [], []
+    for ep in range(episodes):
+        state, _ = env.reset(seed=(seed + ep) if seed is not None else None)
+        total, steps = 0.0, 0
+        for t in range(max_steps):
+            a = int(policy[state])
+            next_state, reward, terminated, truncated, _ = env.step(a)
+            total += reward
+            steps += 1
+            state = next_state
+            if terminated or truncated:
+                break
+        rewards.append(total)
+        lengths.append(steps)
+    return float(np.mean(rewards)), float(np.mean(lengths))
+
+def run_q_learning_experiment(env, params: QLParams):
+    """
+    Convenience wrapper to mirror your MC runner.
+    Returns:
+        qtable, rewards, lengths
+    """
+    qtable, rewards, lengths = q_learning(env, params)
+    return qtable, rewards, lengths
+
 # python
 def plot_experiment_results(env, V, N, episode_returns, episode_lengths, gamma: float = 0.9, figsize=(12, 10)):
     """
@@ -303,12 +411,6 @@ def plot_experiment_results(env, V, N, episode_returns, episode_lengths, gamma: 
         if mask_goal[r, c]:
             policy_grid[r, c] = "G";
             continue
-        if mask_goal[r, c]:
-            policy_grid[r, c] = "S";
-            continue
-        if mask_goal[r, c]:
-            policy_grid[r, c] = "C";
-            continue
         a = _best_action_from_V(env, V, s, gamma)
         policy_grid[r, c] = action_symbols[a]
 
@@ -324,8 +426,6 @@ def plot_experiment_results(env, V, N, episode_returns, episode_lengths, gamma: 
 
     plt.tight_layout()
     plt.show()
-
-    print(episode_lengths)
 
 def _best_action_from_V(env, V, s, gamma):
     P = env.unwrapped.P
@@ -346,7 +446,7 @@ def _best_action_from_V(env, V, s, gamma):
     return int(np.random.default_rng(0).choice(best))  # oder deterministisch: best[-1]
 
 if __name__ == "__main__":
-    """
+
     env_a_random_small = make_env(is_slippery=False, map_size=5, proba_frozen=0.85, seed=42)
     V_a, N_a, returns_a, lengths_a = run_mc_experiment(
         env_a_random_small,
@@ -398,17 +498,3 @@ if __name__ == "__main__":
         max_steps=200,
     )
     plot_experiment_results(env_b_greedy_big, V, N, returns, lengths, gamma=0.9)
-    """
-    env_coin = make_env(is_slippery=False, map_size=22, proba_frozen=0.85, proba_coin=0.2, seed=42)
-    V_coin, N_coin, returns_coin, lengths_coin = run_mc_experiment(
-        env_coin,
-        episodes=30000,
-        alpha=0.1,
-        gamma=0.9,
-        epsilon=1.0,
-        epsilon_decay=0.9995,
-        first_visit=True,
-        greedy=True,
-        max_steps=500,
-    )
-    plot_experiment_results(env_coin, V_coin, N_coin, returns_coin, lengths_coin, gamma=0.9)

@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
+from pathlib import Path
 
 
 def postprocess(episodes, params, rewards, steps, map_size):
@@ -26,6 +27,58 @@ def postprocess(episodes, params, rewards, steps, map_size):
     st["map_size"] = np.repeat(f"{map_size}x{map_size}", st.shape[0])
     return res, st
 
+def moving_avg(x, window=100):
+    """
+    Compute moving average with specified window size.
+
+    :param x: list or array
+    :param window: size of the moving window
+    :return: array of moving averages
+    """
+    if window <= 1:
+        return np.asarray(x)
+    x = np.asarray(x, dtype=float)
+    if len(x) < window:
+        return x
+    c = np.cumsum(np.insert(x, 0, 0))
+    return (c[window:] - c[:-window]) / float(window)
+
+def plot_learning_curve(rewards, label="Q-Learning", smooth=100):
+    """Simple reward-vs-episode curve with optional smoothing."""
+    y = moving_avg(rewards, smooth) if smooth and smooth > 1 else np.asarray(rewards)
+    x = np.arange(len(y))
+    plt.figure()
+    sns.lineplot(x=x, y=y)
+    plt.xlabel("Episode")
+    plt.ylabel(f"Mean reward (window={smooth})" if smooth and smooth>1 else "Reward")
+    plt.title(f"Learning Curve — {label}")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+def plot_lengths_curve(lengths, label="Q-Learning", smooth=100):
+    """Episode length vs. episode index (lower is often better on FrozenLake)."""
+    y = moving_avg(lengths, smooth) if smooth and smooth > 1 else np.asarray(lengths)
+    x = np.arange(len(y))
+    plt.figure()
+    sns.lineplot(x=x, y=y)
+    plt.xlabel("Episode")
+    plt.ylabel(f"Mean length (window={smooth})" if smooth and smooth>1 else "Length")
+    plt.title(f"Trajectory Lengths — {label}")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+def plot_value_heatmap(V, map_size, title="State-Value Function V(s)"):
+    """Heatmap of V(s) arranged as an SxS grid."""
+    grid = np.array(V).reshape(map_size, map_size)
+    plt.figure()
+    ax = sns.heatmap(grid, annot=False, cmap="viridis")
+    ax.set_title(title)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    plt.tight_layout()
+    plt.show()
 
 def qtable_directions_map(qtable, map_size):
     """We want to plot the policy the agent has learned in the end. To do that
@@ -50,7 +103,8 @@ def qtable_directions_map(qtable, map_size):
 
 
 def plot_q_values_map(qtable, env, map_size, params, img_label):
-    """With the following function, we'll plot on the left the last frame of
+    """
+    With the following function, we'll plot on the left the last frame of
     the simulation. If the agent learned a good policy to solve the task, we
     expect to see it on the tile of the treasure in the last frame of the
     video. On the right we'll plot the policy the agent has learned. Each
@@ -84,7 +138,8 @@ def plot_q_values_map(qtable, env, map_size, params, img_label):
         spine.set_linewidth(0.7)
         spine.set_color("black")
     img_title = f"frozenlake_q_values_{map_size}x{map_size}_{img_label}.png"
-    fig.savefig(params.savefig_folder / img_title, bbox_inches="tight")
+    save_path = Path(params.savefig_folder) / img_title
+    fig.savefig(save_path, bbox_inches="tight")
     plt.show()
 
 
@@ -104,7 +159,8 @@ def plot_states_actions_distribution(states, actions, map_size, params, img_labe
     ax[1].set_title("Actions")
     fig.tight_layout()
     img_title = f"frozenlake_states_actions_distrib_{map_size}x{map_size}_{img_label}.png"
-    fig.savefig(params.savefig_folder / img_title, bbox_inches="tight")
+    save_path = Path(params.savefig_folder) / img_title
+    fig.savefig(save_path, bbox_inches="tight")
     plt.show()
 
 
@@ -127,7 +183,8 @@ def plot_steps_and_rewards(rewards_df, steps_df, params):
         axi.legend(title="map size")
     fig.tight_layout()
     img_title = "frozenlake_steps_and_rewards.png"
-    fig.savefig(params.savefig_folder / img_title, bbox_inches="tight")
+    save_path = Path(params.savefig_folder) / img_title
+    fig.savefig(save_path, bbox_inches="tight")
     plt.show()
 
 
