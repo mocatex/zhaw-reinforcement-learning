@@ -6,11 +6,12 @@ from collections import defaultdict
 
 class RewardShapingWrapper(Wrapper):
     """
-    Wrapper für FrozenLake:
-    - Agent fällt in Loch: -10
+    Wrapper für FrozenLake mit Coin-Pickup:
+    - Coin (C): +coin_reward und das Tile wird zu b'S' (einmalig)
+    - Loch (H): -10
+    - Goal (G): +10
     - normaler Schritt: -0.01
-    - läuft in Wand (kein Positionswechsel): -1
-    - erreicht Goal: +10
+    - Wand (kein Positionswechsel): -1
     """
     def __init__(self, env):
         super().__init__(env)
@@ -34,6 +35,12 @@ class RewardShapingWrapper(Wrapper):
             r_new = -10.0
         elif cell == b'G':
             r_new = 10.0
+        elif cell == b'C':
+            # Coin aufsammeln: Reward geben und Tile permanent in ein normales Start/Feld umwandeln
+            r_new = 1.0
+            # setze das Tile so, dass Coin nicht erneut eingesammelt wird
+            # (desc ist numpy array dtype='c', Zuweisung als bytes)
+            self.env.unwrapped.desc[row, col] = b'S'
         else:
             # Wand: kein Positionswechsel gegenüber prev_s
             if prev_s is not None and int(s_next) == int(prev_s):
@@ -41,13 +48,13 @@ class RewardShapingWrapper(Wrapper):
 
         return int(s_next), r_new, terminated, truncated, info
 
-def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float = 0.9, seed: int = 0):
+def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float = 0.9, proba_coin=0.0, seed: int = 0):
     """Hilfsfunktion: erzeugt FrozenLake und wickelt ihn mit RewardShapingWrapper."""
     base_env = gym.make(
         "FrozenLake-v1",
         is_slippery=is_slippery,
         render_mode=None,
-        desc=generate_random_map(size=map_size, p=proba_frozen, seed=seed),
+        desc=generate_random_map(size=map_size, p=proba_frozen, proba_coin=proba_coin, seed=seed),
     )
     return RewardShapingWrapper(base_env)
 
@@ -89,6 +96,8 @@ def shaped_reward(prev_s, s_next, desc, ncol):
         return -10.0
     if cell == b'G':  # Goal
         return 10.0
+    if cell == b'C':  # Coin
+        return 1
     # Wand?
     return -1.0 if int(s_next) == int(prev_s) else -0.01
 
@@ -294,6 +303,12 @@ def plot_experiment_results(env, V, N, episode_returns, episode_lengths, gamma: 
         if mask_goal[r, c]:
             policy_grid[r, c] = "G";
             continue
+        if mask_goal[r, c]:
+            policy_grid[r, c] = "S";
+            continue
+        if mask_goal[r, c]:
+            policy_grid[r, c] = "C";
+            continue
         a = _best_action_from_V(env, V, s, gamma)
         policy_grid[r, c] = action_symbols[a]
 
@@ -309,6 +324,8 @@ def plot_experiment_results(env, V, N, episode_returns, episode_lengths, gamma: 
 
     plt.tight_layout()
     plt.show()
+
+    print(episode_lengths)
 
 def _best_action_from_V(env, V, s, gamma):
     P = env.unwrapped.P
@@ -329,7 +346,7 @@ def _best_action_from_V(env, V, s, gamma):
     return int(np.random.default_rng(0).choice(best))  # oder deterministisch: best[-1]
 
 if __name__ == "__main__":
-
+    """
     env_a_random_small = make_env(is_slippery=False, map_size=5, proba_frozen=0.85, seed=42)
     V_a, N_a, returns_a, lengths_a = run_mc_experiment(
         env_a_random_small,
@@ -381,3 +398,17 @@ if __name__ == "__main__":
         max_steps=200,
     )
     plot_experiment_results(env_b_greedy_big, V, N, returns, lengths, gamma=0.9)
+    """
+    env_coin = make_env(is_slippery=False, map_size=22, proba_frozen=0.85, proba_coin=0.2, seed=42)
+    V_coin, N_coin, returns_coin, lengths_coin = run_mc_experiment(
+        env_coin,
+        episodes=30000,
+        alpha=0.1,
+        gamma=0.9,
+        epsilon=1.0,
+        epsilon_decay=0.9995,
+        first_visit=True,
+        greedy=True,
+        max_steps=500,
+    )
+    plot_experiment_results(env_coin, V_coin, N_coin, returns_coin, lengths_coin, gamma=0.9)
