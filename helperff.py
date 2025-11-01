@@ -42,13 +42,14 @@ class RewardShapingWrapper(Wrapper):
 
         return int(s_next), r_new, terminated, truncated, info
 
-def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float = 0.9, seed: int = 0, render_mode=None):
+def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float = 0.9, seed: int = 0, render_mode=None, max_steps: int = 1000):
     """Hilfsfunktion: erzeugt FrozenLake und wickelt ihn mit RewardShapingWrapper."""
     base_env = gym.make(
         "FrozenLake-v1",
         is_slippery=is_slippery,
         render_mode=render_mode,
         desc=generate_random_map(size=map_size, p=proba_frozen, seed=seed),
+        max_episode_steps=max_steps,
     )
     return RewardShapingWrapper(base_env)
 
