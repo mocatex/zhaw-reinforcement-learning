@@ -80,24 +80,6 @@ def plot_value_heatmap(V, map_size, title="State-Value Function V(s)"):
     plt.tight_layout()
     plt.show()
 
-def plot_compare_learning_curves(series_dict, smooth=100, ylabel="Reward"):
-    """
-    series_dict: {"Algorithm name": list_of_per_episode_values, ...}
-    One overlay plot for quick comparison.
-    """
-    plt.figure()
-    for name, series in series_dict.items():
-        y = moving_avg(series, smooth) if smooth and smooth > 1 else np.asarray(series)
-        x = np.arange(len(y))
-        sns.lineplot(x=x, y=y, label=name)
-    plt.xlabel("Episode")
-    plt.ylabel(f"Mean {ylabel} (window={smooth})" if smooth and smooth>1 else ylabel)
-    plt.title(f"{ylabel} vs Episodes — Comparison")
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
 def qtable_directions_map(qtable, map_size):
     """We want to plot the policy the agent has learned in the end. To do that
     we will: 1. extract the best Q-values from the Q-table for each state,
