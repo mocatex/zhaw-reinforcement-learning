@@ -3,6 +3,7 @@ from gymnasium.envs.toy_text.frozen_lake import generate_random_map
 from gymnasium import Wrapper
 import numpy as np
 from collections import defaultdict
+from dataclasses import dataclass
 
 class RewardShapingWrapper(Wrapper):
     """
@@ -41,12 +42,12 @@ class RewardShapingWrapper(Wrapper):
 
         return int(s_next), r_new, terminated, truncated, info
 
-def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float = 0.9, seed: int = 0):
+def make_env(is_slippery: bool = False, map_size: int = 5, proba_frozen: float = 0.9, seed: int = 0, render_mode=None):
     """Hilfsfunktion: erzeugt FrozenLake und wickelt ihn mit RewardShapingWrapper."""
     base_env = gym.make(
         "FrozenLake-v1",
         is_slippery=is_slippery,
-        render_mode=None,
+        render_mode=render_mode,
         desc=generate_random_map(size=map_size, p=proba_frozen, seed=seed),
     )
     return RewardShapingWrapper(base_env)
@@ -201,6 +202,122 @@ def run_mc_experiment(
 
     env.close()
     return V, N, episode_returns, episode_lengths
+
+@dataclass
+class QLParams:
+    episodes: int = 20000
+    max_steps: int = 200
+    alpha: float = 0.1            # learning rate
+    gamma: float = 0.99           # discount
+    epsilon_start: float = 1.0    # epsilon-greedy start
+    epsilon_min: float = 0.05
+    epsilon_decay: float = 0.999  # per-episode multiplicative decay
+    seed: int | None = 42         # for reproducibility
+    savefig_folder: str | None = "figures"
+
+def _epsilon_greedy_action(qtable: np.ndarray, state: int, epsilon: float, n_actions: int, rng: np.random.Generator) -> int:
+    """
+    Pick action ε-greedily from Q[state].
+    With probability ε, pick random action.
+    Otherwise pick argmax_a Q[state,a].
+    Returns action index.
+    """
+    if rng.random() < epsilon:
+        return rng.integers(0, n_actions)
+    return int(np.argmax(qtable[state]))
+
+def q_learning(env, params: QLParams):
+    """
+    Vanilla tabular Q-Learning on environment.
+    Returns:
+        qtable: (n_states, n_actions)
+        rewards_per_episode: list[float]
+        lengths_per_episode: list[int]
+    """
+    # Reproducibility
+    rng = np.random.default_rng(params.seed)
+
+    # Gymnasium reset signature
+    obs, info = env.reset(seed=params.seed)
+    n_states = env.observation_space.n
+    n_actions = env.action_space.n
+
+    qtable = np.zeros((n_states, n_actions), dtype=np.float32)
+    rewards_per_episode = []
+    lengths_per_episode = []
+
+    epsilon = params.epsilon_start
+
+    for ep in range(params.episodes):
+        state, _ = env.reset(seed=params.seed + ep if params.seed is not None else None)
+
+        total_reward = 0.0
+        steps = 0
+
+        for t in range(params.max_steps):
+            a = _epsilon_greedy_action(qtable, state, epsilon, n_actions, rng)
+            next_state, reward, terminated, truncated, _ = env.step(a)
+            done = terminated or truncated
+
+            # Q-learning target: r + gamma * max_a' Q(s', a')
+            best_next = 0.0 if done else np.max(qtable[next_state])
+            td_target = reward + params.gamma * best_next
+            td_error  = td_target - qtable[state, a]
+            qtable[state, a] += params.alpha * td_error
+
+            total_reward += reward
+            steps += 1
+            state = next_state
+
+            if done:
+                break
+
+        rewards_per_episode.append(total_reward)
+        lengths_per_episode.append(steps)
+
+        # ε decay (keep at least epsilon_min)
+        epsilon = max(params.epsilon_min, epsilon * params.epsilon_decay)
+
+    return qtable, rewards_per_episode, lengths_per_episode
+
+def q_to_v(qtable: np.ndarray) -> np.ndarray:
+    """V(s) = max_a Q(s,a)."""
+    return np.max(qtable, axis=1)
+
+def greedy_policy_from_q(qtable: np.ndarray) -> np.ndarray:
+    """π(s) = argmax_a Q(s,a)."""
+    return np.argmax(qtable, axis=1).astype(int)
+
+def evaluate_policy(env, policy: np.ndarray, episodes: int = 100, max_steps: int = 200, seed: int | None = 123):
+    """
+    Roll out a deterministic policy for reporting only (no learning).
+    Returns average reward and average trajectory length.
+    """
+    rng = np.random.default_rng(seed)
+    rewards, lengths = [], []
+    for ep in range(episodes):
+        state, _ = env.reset(seed=(seed + ep) if seed is not None else None)
+        total, steps = 0.0, 0
+        for t in range(max_steps):
+            a = int(policy[state])
+            next_state, reward, terminated, truncated, _ = env.step(a)
+            total += reward
+            steps += 1
+            state = next_state
+            if terminated or truncated:
+                break
+        rewards.append(total)
+        lengths.append(steps)
+    return float(np.mean(rewards)), float(np.mean(lengths))
+
+def run_q_learning_experiment(env, params: QLParams):
+    """
+    Convenience wrapper to mirror your MC runner.
+    Returns:
+        qtable, rewards, lengths
+    """
+    qtable, rewards, lengths = q_learning(env, params)
+    return qtable, rewards, lengths
 
 # python
 def plot_experiment_results(env, V, N, episode_returns, episode_lengths, gamma: float = 0.9, figsize=(12, 10)):
